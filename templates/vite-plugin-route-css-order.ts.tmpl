@@ -1,0 +1,83 @@
+// A Vite plugin that makes each route's CSS load in import order.
+//
+// React Router emits a route's CSS as <link> tags in the order "the route's own CSS → CSS of shared chunks".
+// As a result, the page CSS (which overrides the look of shared components and libraries) is loaded first,
+// and for rules of equal specificity the shared side wins.
+// CSS is written on the assumption that whatever is imported later wins, so this plugin reorders the CSS
+// of each route to match the order in which the route's modules are executed (= import order).
+//
+// What it does: reorders each route's `css` in the .vite/manifest.json written by the client build.
+// React Router reads this file to decide the order of the <link> tags
+// (the order in the first chunk is used as is).
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Plugin } from 'vite';
+
+const STYLE_MODULE = /\.(css|scss|sass|less|styl|stylus|pcss|postcss)$/;
+
+interface ManifestChunk {
+    file: string;
+    css?: string[];
+    imports?: string[];
+    isEntry?: boolean;
+}
+
+export function routeCssOrder(): Plugin {
+    return {
+        name: 'route-css-order',
+        apply: 'build',
+        applyToEnvironment: (environment) => environment.name === 'client',
+        writeBundle(options, bundle) {
+            if (!options.dir) return;
+            const manifestFile = path.join(options.dir, '.vite', 'manifest.json');
+            if (!fs.existsSync(manifestFile)) return;
+            const manifest: Record<string, ManifestChunk> = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+
+            // Module → CSS files of the chunk that contains the module
+            const cssOfModule = new Map<string, string[]>();
+            const entryModuleOfFile = new Map<string, string>();
+            for (const chunk of Object.values(bundle)) {
+                if (chunk.type !== 'chunk') continue;
+                const css = [...(chunk.viteMetadata?.importedCss ?? [])];
+                for (const id of chunk.moduleIds) cssOfModule.set(id, css);
+                if (chunk.facadeModuleId) entryModuleOfFile.set(chunk.fileName, chunk.facadeModuleId);
+            }
+
+            for (const entry of Object.values(manifest)) {
+                const entryModule = entry.isEntry ? entryModuleOfFile.get(entry.file) : undefined;
+                if (!entryModule) continue;
+
+                // Walk from the entry module in execution order (dependencies first, in import order),
+                // looking at the style imports one by one.
+                // A single CSS file bundles several styles, so its position is decided by the one imported last.
+                // (Overriding styles are imported after the styles they override; the page's own SCSS comes last.)
+                let ordered: string[] = [];
+                const visited = new Set<string>();
+                const visit = (id: string) => {
+                    if (visited.has(id)) return;
+                    visited.add(id);
+                    for (const imported of this.getModuleInfo(id)?.importedIds ?? []) visit(imported);
+                    if (!STYLE_MODULE.test(id.split('?', 1)[0])) return;
+                    const files = cssOfModule.get(id) ?? [];
+                    ordered = [...ordered.filter((file) => !files.includes(file)), ...files];
+                };
+                visit(entryModule);
+
+                // CSS not reached above (collected by React Router from chunk dependencies) goes first
+                const all: string[] = [];
+                const seen = new Set<ManifestChunk>();
+                const collect = (chunk: ManifestChunk | undefined) => {
+                    if (!chunk || seen.has(chunk)) return;
+                    seen.add(chunk);
+                    all.push(...(chunk.css ?? []));
+                    for (const key of chunk.imports ?? []) collect(manifest[key]);
+                };
+                collect(entry);
+                const rest = [...new Set(all)].filter((file) => !ordered.includes(file));
+                if (rest.length + ordered.length > 0) entry.css = [...rest, ...ordered];
+            }
+
+            fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+        },
+    };
+}

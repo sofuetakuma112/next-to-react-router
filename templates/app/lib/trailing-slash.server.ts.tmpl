@@ -1,0 +1,9 @@
+// Redirects `/about/` to `/about` so every page has a single URL.
+import { redirect, type MiddlewareFunction } from 'react-router';
+
+export const trailingSlashRedirect: MiddlewareFunction<Response> = async ({ url }, next) => {
+    if (url.pathname !== '/' && url.pathname.endsWith('/')) {
+        return redirect(`${url.pathname.replace(/\/+$/, '') || '/'}${url.search}`, 308);
+    }
+    return next();
+};

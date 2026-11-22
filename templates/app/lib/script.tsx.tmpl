@@ -1,0 +1,89 @@
+// Load a script with one of next/script's loading strategies:
+//
+//   <Script src="https://example.com/a.js" />                          added to <body> after hydration (default)
+//   <Script id="inline">{`window.a = 1;`}</Script>                      inline, also after hydration
+//   <Script src="…" strategy="lazyOnload" />                            added once the page has finished loading
+//   <Script id="early" strategy="beforeInteractive">{`…`}</Script>     rendered into the HTML, runs before hydration
+//
+// A script with the same `id` (or `src`) is only added once, however often the component renders.
+import { useEffect, type ScriptHTMLAttributes } from 'react';
+
+export interface ScriptProps extends Omit<ScriptHTMLAttributes<HTMLScriptElement>, 'onLoad' | 'onError' | 'children'> {
+    id?: string;
+    src?: string;
+    strategy?: 'beforeInteractive' | 'afterInteractive' | 'lazyOnload';
+    /** Inline script source. */
+    children?: string;
+    /** Called when an external script has loaded (not called again when it was loaded before). */
+    onLoad?: (event: Event) => void;
+    /** Called when the script has loaded, and again on every later mount. */
+    onReady?: () => void;
+    onError?: (event: Event | string) => void;
+}
+
+const added = new Set<string>();
+const pending = new Map<string, Promise<void>>();
+
+function inject({ id, src, strategy, children, dangerouslySetInnerHTML, onLoad, onReady, onError, ...attributes }: ScriptProps) {
+    const key = id ?? src;
+    if (key && added.has(key)) {
+        const loading = src ? pending.get(src) : undefined;
+        if (loading) loading.then(() => onReady?.(), () => undefined);
+        else onReady?.();
+        return;
+    }
+    if (key) added.add(key);
+
+    const element = document.createElement('script');
+    for (const [name, value] of Object.entries(attributes)) {
+        if (value === undefined || value === false || typeof value === 'function' || typeof value === 'object') continue;
+        element.setAttribute(name === 'className' ? 'class' : name === 'htmlFor' ? 'for' : name, value === true ? '' : String(value));
+    }
+    if (id) element.id = id;
+    element.setAttribute('data-nscript', strategy ?? 'afterInteractive');
+
+    if (src) {
+        const loading = new Promise<void>((resolve, reject) => {
+            element.addEventListener('load', (event) => {
+                resolve();
+                onLoad?.(event);
+                onReady?.();
+            });
+            element.addEventListener('error', (event) => {
+                reject(event);
+                onError?.(event);
+            });
+        });
+        pending.set(src, loading);
+        loading.catch(() => undefined);
+        element.src = src;
+    } else {
+        element.text = children ?? dangerouslySetInnerHTML?.__html?.toString() ?? '';
+    }
+    document.body.appendChild(element);
+    if (!src) onReady?.();
+}
+
+function whenIdle(callback: () => void) {
+    if ('requestIdleCallback' in window) window.requestIdleCallback(callback);
+    else setTimeout(callback, 1);
+}
+
+export default function Script({ strategy = 'afterInteractive', ...props }: ScriptProps) {
+    useEffect(() => {
+        if (strategy === 'beforeInteractive') return;
+        const run = () => inject({ ...props, strategy });
+        if (strategy === 'lazyOnload') {
+            if (document.readyState === 'complete') whenIdle(run);
+            else window.addEventListener('load', () => whenIdle(run), { once: true });
+        } else {
+            run();
+        }
+        // A script is added once; later prop changes do not reload it (next/script behaves the same way).
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    if (strategy !== 'beforeInteractive') return null;
+    const { children, dangerouslySetInnerHTML, onLoad: _onLoad, onReady: _onReady, onError: _onError, ...attributes } = props;
+    return <script {...attributes} dangerouslySetInnerHTML={children !== undefined ? { __html: children } : dangerouslySetInnerHTML} />;
+}

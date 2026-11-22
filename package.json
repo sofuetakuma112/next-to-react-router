@@ -1,0 +1,51 @@
+{
+    "name": "next-to-react-router",
+    "version": "0.1.0",
+    "description": "Codemod that converts a Next.js (Pages Router) app to React Router (framework mode) + Vite",
+    "keywords": [
+        "codemod",
+        "nextjs",
+        "react-router",
+        "vite",
+        "migration"
+    ],
+    "license": "MIT",
+    "author": "sofuetakuma",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/sofuetakuma112/next-to-react-router.git"
+    },
+    "homepage": "https://github.com/sofuetakuma112/next-to-react-router#readme",
+    "bugs": {
+        "url": "https://github.com/sofuetakuma112/next-to-react-router/issues"
+    },
+    "type": "module",
+    "bin": {
+        "next-to-react-router": "bin/next-to-react-router.mjs"
+    },
+    "files": [
+        "bin",
+        "lib",
+        "templates",
+        "README.md",
+        "README.ja.md",
+        "LICENSE"
+    ],
+    "engines": {
+        "node": ">=22.22.0"
+    },
+    "scripts": {
+        "test": "node --test test/*.test.mjs",
+        "test:e2e": "node --test --test-timeout=1200000 test/e2e/*.test.mjs",
+        "format": "prettier --write .",
+        "lint": "prettier --check ."
+    },
+    "dependencies": {
+        "image-size": "2.1.0",
+        "semver": "^7.7.3",
+        "ts-morph": "28.0.0"
+    },
+    "devDependencies": {
+        "prettier": "^3.6.2"
+    }
+}

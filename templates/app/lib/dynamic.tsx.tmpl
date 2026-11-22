@@ -1,0 +1,39 @@
+// Load a component lazily: `const Chart = dynamic(() => import('./Chart'), { ssr: false, loading: () => <Spinner /> })`.
+// A thin wrapper around React.lazy + Suspense.
+import { Suspense, lazy, useEffect, useState, type ComponentType, type ReactNode } from 'react';
+
+interface LoadingProps {
+    isLoading: boolean;
+    pastDelay: boolean;
+    error: Error | null;
+}
+
+export interface DynamicOptions {
+    /** Render the component on the server too (default). With `false` it is rendered in the browser only. */
+    ssr?: boolean;
+    /** Shown while the component is loading. */
+    loading?: (props: LoadingProps) => ReactNode;
+}
+
+type Loader<P> = () => Promise<ComponentType<P> | { default: ComponentType<P> }>;
+
+export default function dynamic<P = Record<string, never>>(loader: Loader<P>, options: DynamicOptions = {}): ComponentType<P> {
+    const Lazy = lazy(async () => {
+        const loaded = await loader();
+        return typeof loaded === 'function' ? { default: loaded } : loaded;
+    }) as unknown as ComponentType<any>;
+
+    function Dynamic(props: P) {
+        const [ready, setReady] = useState(options.ssr !== false);
+        useEffect(() => setReady(true), []);
+
+        const fallback = options.loading ? options.loading({ isLoading: true, pastDelay: true, error: null }) : null;
+        if (!ready) return <>{fallback}</>;
+        return (
+            <Suspense fallback={fallback}>
+                <Lazy {...props} />
+            </Suspense>
+        );
+    }
+    return Dynamic;
+}

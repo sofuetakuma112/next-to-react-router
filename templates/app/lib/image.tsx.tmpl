@@ -1,0 +1,128 @@
+// A component that renders an image optimized for the size it is displayed at.
+// The actual conversion is done by `/_image` (app/routes/_image.ts); this file only builds the srcset.
+import type { CSSProperties, ImgHTMLAttributes, Ref } from 'react';
+import { IMAGE_CONFIG } from './image-config';
+
+export interface StaticImageData {
+    src: string;
+    width: number;
+    height: number;
+}
+
+type NumberLike = number | `${number}`;
+
+export interface ImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src' | 'srcSet' | 'width' | 'height' | 'alt'> {
+    src: string | StaticImageData;
+    alt: string;
+    width?: NumberLike;
+    height?: NumberLike;
+    /** Stretch to fill the parent element (the parent needs a position) */
+    fill?: boolean;
+    quality?: NumberLike;
+    /** Load immediately (for above-the-fold images) */
+    priority?: boolean;
+    /** Use src as is, without optimization */
+    unoptimized?: boolean;
+    /** Accepted for next/image compatibility and ignored (not forwarded to the DOM) */
+    placeholder?: 'blur' | 'empty' | string;
+    /** Accepted for next/image compatibility and ignored (not forwarded to the DOM) */
+    blurDataURL?: string;
+    /** Called with the img element once the image has loaded (not forwarded to the DOM) */
+    onLoadingComplete?: (img: HTMLImageElement) => void;
+    ref?: Ref<HTMLImageElement>;
+}
+
+const ALL_SIZES = [...IMAGE_CONFIG.imageSizes, ...IMAGE_CONFIG.deviceSizes].sort((a, b) => a - b);
+
+function toNumber(value: NumberLike | undefined): number | undefined {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+    if (typeof value === 'string' && /^[0-9.]+$/.test(value)) return Number(value);
+    return undefined;
+}
+
+function candidateWidths(width: number | undefined, sizes: string | undefined): { widths: number[]; kind: 'w' | 'x' } {
+    if (sizes) {
+        // If sizes contains vw values, candidates smaller than the smallest percentage are not needed
+        const percents = Array.from(sizes.matchAll(/(^|\s)(1?\d?\d)vw/g), (match) => parseInt(match[2], 10));
+        if (percents.length > 0) {
+            const smallest = IMAGE_CONFIG.deviceSizes[0] * Math.min(...percents) * 0.01;
+            return { widths: ALL_SIZES.filter((size) => size >= smallest), kind: 'w' };
+        }
+        return { widths: ALL_SIZES, kind: 'w' };
+    }
+    if (width === undefined) return { widths: IMAGE_CONFIG.deviceSizes, kind: 'w' };
+    // Two candidates: 1x and 2x (for high-density displays)
+    const largest = ALL_SIZES[ALL_SIZES.length - 1];
+    const widths = [width, width * 2].map((target) => ALL_SIZES.find((size) => size >= target) ?? largest);
+    return { widths: Array.from(new Set(widths)), kind: 'x' };
+}
+
+export function imageUrl(src: string, width: number, quality: number = IMAGE_CONFIG.qualities[0]): string {
+    return `/_image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
+}
+
+export default function Image({
+    src,
+    alt,
+    width,
+    height,
+    fill = false,
+    quality,
+    priority = false,
+    unoptimized = false,
+    placeholder: _placeholder,
+    blurDataURL: _blurDataURL,
+    onLoadingComplete,
+    onLoad,
+    sizes,
+    loading,
+    fetchPriority,
+    style,
+    ...rest
+}: ImageProps) {
+    const source = typeof src === 'string' ? src : src.src;
+    const widthValue = toNumber(width) ?? (typeof src === 'string' || fill ? undefined : src.width);
+    const heightValue = toNumber(height) ?? (typeof src === 'string' || fill ? undefined : src.height);
+
+    // SVGs, data URLs and blob URLs are rendered as is, without conversion
+    const passThrough =
+        unoptimized || source.startsWith('data:') || source.startsWith('blob:') || source.split('?', 1)[0].endsWith('.svg');
+
+    let srcSet: string | undefined;
+    let resolvedSrc = source;
+    let resolvedSizes = sizes;
+    if (!passThrough) {
+        const { widths, kind } = candidateWidths(widthValue, sizes);
+        const q = toNumber(quality) ?? IMAGE_CONFIG.qualities[0];
+        srcSet = widths
+            .map((candidate, index) => `${imageUrl(source, candidate, q)} ${kind === 'w' ? candidate : index + 1}${kind}`)
+            .join(', ');
+        resolvedSrc = imageUrl(source, widths[widths.length - 1], q);
+        if (!sizes && kind === 'w') resolvedSizes = '100vw';
+    }
+
+    const fillStyle: CSSProperties | undefined = fill
+        ? { position: 'absolute', height: '100%', width: '100%', left: 0, top: 0, right: 0, bottom: 0 }
+        : undefined;
+
+    return (
+        <img
+            {...rest}
+            onLoad={(event) => {
+                onLoad?.(event);
+                onLoadingComplete?.(event.currentTarget);
+            }}
+            alt={alt}
+            width={fill ? undefined : widthValue}
+            height={fill ? undefined : heightValue}
+            loading={priority ? loading : loading ?? 'lazy'}
+            fetchPriority={priority ? 'high' : fetchPriority}
+            decoding="async"
+            style={{ ...fillStyle, color: 'transparent', ...style }}
+            // Put sizes and srcSet before src (so the browser does not fetch src first)
+            sizes={resolvedSizes}
+            srcSet={srcSet}
+            src={resolvedSrc}
+        />
+    );
+}

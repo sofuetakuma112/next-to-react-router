@@ -1,0 +1,7 @@
+// Image optimization endpoint (/_image?url=…&w=…&q=…)
+import type { LoaderFunctionArgs } from 'react-router';
+import { optimizeImage } from '../lib/image-optimizer.server';
+
+export function loader({ request }: LoaderFunctionArgs) {
+    return optimizeImage(request);
+}

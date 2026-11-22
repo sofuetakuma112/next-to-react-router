@@ -1,0 +1,9 @@
+import { startTransition } from 'react';
+import { hydrateRoot } from 'react-dom/client';
+import { HydratedRouter } from 'react-router/dom';
+
+// No <StrictMode>: the Next.js app ran with `reactStrictMode` off. Delete this file to get React Router's
+// default entry, which enables it.
+startTransition(() => {
+    hydrateRoot(document, <HydratedRouter />);
+});

@@ -1,0 +1,29 @@
+// Production HTTP server (`npm run start`). In development, use `npm run dev` (the Vite dev server).
+import fs from 'node:fs';
+import compression from 'compression';
+import express from 'express';
+import { createRequestHandler } from '@react-router/express';
+
+// Load the environment variables the server reads at runtime from .env files.
+// Variables that are already set are not overwritten. VITE_* are inlined at build time, so they are not used here.
+for (const file of ['.env.production.local', '.env.local', '.env.production', '.env']) {
+    if (fs.existsSync(file)) process.loadEnvFile(file);
+}
+
+const build = await import('./build/server/index.js');
+
+const app = express();
+app.disable('x-powered-by');
+app.use(compression());
+
+// JS / CSS produced by the build (with a hash in the file name) can be cached forever
+app.use('/_assets', express.static('build/client/_assets', { immutable: true, maxAge: '1y' }));
+// Files that came from public/ (whose names do not change) are revalidated on every request
+app.use(express.static('build/client', { index: false, redirect: false, maxAge: 0 }));
+
+app.use(createRequestHandler({ build, mode: process.env.NODE_ENV }));
+
+const port = Number(process.env.PORT) || 3000;
+app.listen(port, () => {
+    console.log(`> Ready on http://localhost:${port}`);
+});

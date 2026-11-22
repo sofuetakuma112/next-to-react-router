@@ -1,0 +1,56 @@
+// Small URL helpers.
+// Provides React Router equivalents of Next.js's router.query / router.pathname / { pathname, query }.
+import { useMemo } from 'react';
+import { useMatches, useParams, useSearchParams } from 'react-router';
+
+export type QueryValue = string | number | boolean | null | undefined;
+export type QueryInput = Record<string, QueryValue | readonly QueryValue[]>;
+export type Query = Record<string, string | string[] | undefined>;
+
+function stringify(value: QueryValue): string {
+    if (typeof value === 'string') return value;
+    if ((typeof value === 'number' && !Number.isNaN(value)) || typeof value === 'boolean') return String(value);
+    return '';
+}
+
+/**
+ * Turns a query object into the form `?a=1&b=2` (an empty string if it is empty).
+ * Use it as `<Link to={{ pathname, search: searchOf({ q }) }}>` or `navigate({ pathname, search: searchOf(…) })`.
+ */
+export function searchOf(query: QueryInput): string {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+        if (Array.isArray(value)) value.forEach((item: QueryValue) => params.append(key, stringify(item)));
+        else params.set(key, stringify(value as QueryValue));
+    }
+    const search = params.toString();
+    return search ? `?${search}` : '';
+}
+
+/** Turns a query string into an object. A key that appears more than once becomes an array. */
+export function parseQuery(searchParams: URLSearchParams): Query {
+    const query: Query = {};
+    searchParams.forEach((value, key) => {
+        const current = query[key];
+        if (current === undefined) query[key] = value;
+        else if (Array.isArray(current)) current.push(value);
+        else query[key] = [current, value];
+    });
+    return query;
+}
+
+/** An object combining the route params (the id in /posts/:id) and the query string */
+export function useQuery(): Query {
+    const params = useParams();
+    const [searchParams] = useSearchParams();
+    return useMemo(() => ({ ...parseQuery(searchParams), ...params }), [params, searchParams]);
+}
+
+/**
+ * The pattern of the currently matched route (e.g. `/posts/:id`).
+ * app/routes.ts uses each route's pattern as its id, so the id of the leaf route is the pattern itself.
+ */
+export function useRoutePattern(): string {
+    const matches = useMatches();
+    return matches[matches.length - 1]?.id ?? '';
+}

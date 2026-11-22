@@ -1,0 +1,252 @@
+// Converts an image to the requested width, quality and a format the browser accepts, and returns it.
+// Results are stored in .cache/images and reused until they expire.
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import sharp, { type Metadata } from 'sharp';
+import { IMAGE_CONFIG } from './image-config';
+
+// Read from public/ in development, and from build/client/ (copied there by the build) in production
+const PUBLIC_DIR = path.resolve(import.meta.env.DEV ? 'public' : 'build/client');
+const CACHE_DIR = path.resolve('.cache/images');
+const MAX_SOURCE_BYTES = 50 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 7_000;
+
+const EXTENSIONS: Record<string, string> = {
+    'image/avif': 'avif',
+    'image/webp': 'webp',
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/svg+xml': 'svg',
+    'image/x-icon': 'ico',
+};
+
+interface CachedImage {
+    body: Buffer;
+    contentType: string;
+    etag: string;
+    maxAge: number;
+}
+
+class ImageError extends Error {
+    constructor(public status: number, message: string) {
+        super(message);
+    }
+}
+
+function parseParams(url: URL) {
+    const source = url.searchParams.get('url');
+    const w = url.searchParams.get('w');
+    const q = url.searchParams.get('q');
+    if (!source) throw new ImageError(400, '"url" parameter is required');
+    if (source.length > 3072) throw new ImageError(400, '"url" parameter is too long');
+    if (!w || !/^[0-9]+$/.test(w)) throw new ImageError(400, '"w" parameter (width) must be an integer greater than 0');
+    if (!q || !/^[0-9]+$/.test(q)) throw new ImageError(400, '"q" parameter (quality) must be an integer between 1 and 100');
+    const width = Number(w);
+    const quality = Number(q);
+    if (![...IMAGE_CONFIG.deviceSizes, ...IMAGE_CONFIG.imageSizes].includes(width)) {
+        throw new ImageError(400, `"w" parameter (width) of ${width} is not allowed`);
+    }
+    if (!IMAGE_CONFIG.qualities.includes(quality)) {
+        throw new ImageError(400, `"q" parameter (quality) of ${quality} is not allowed`);
+    }
+    return { source, width, quality };
+}
+
+/** Turns a pattern like `/a/**` into a regular expression (`**` matches across `/`, `*` does not) */
+function globToRegExp(glob: string): RegExp {
+    const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^${escaped.replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*')}$`);
+}
+
+function isAllowedRemote(url: URL): boolean {
+    return IMAGE_CONFIG.remotePatterns.some((pattern) => {
+        if (pattern.protocol && `${pattern.protocol}:` !== url.protocol) return false;
+        if (!globToRegExp(pattern.hostname).test(url.hostname)) return false;
+        if (pattern.port !== undefined && pattern.port !== url.port) return false;
+        return globToRegExp(pattern.pathname ?? '**').test(url.pathname);
+    });
+}
+
+function upstreamMaxAge(cacheControl: string | null): number {
+    const match = /(?:^|,)\s*(?:s-maxage|max-age)=(\d+)/i.exec(cacheControl ?? '');
+    return match ? Number(match[1]) : 0;
+}
+
+async function readSource(source: string): Promise<{ buffer: Buffer; maxAge: number }> {
+    if (source.startsWith('/') && !source.startsWith('//')) {
+        // The site's own image (under public/)
+        let pathname: string;
+        try {
+            pathname = decodeURIComponent(source.split(/[?#]/, 1)[0]);
+        } catch {
+            throw new ImageError(400, '"url" parameter is invalid');
+        }
+        if (pathname.includes('\0') || pathname.startsWith('/_image') || pathname.startsWith('/_next/image')) {
+            throw new ImageError(400, '"url" parameter is not allowed');
+        }
+        const file = path.join(PUBLIC_DIR, pathname);
+        if (!file.startsWith(PUBLIC_DIR + path.sep)) throw new ImageError(400, '"url" parameter is not allowed');
+        try {
+            return { buffer: await fs.readFile(file), maxAge: 0 };
+        } catch {
+            throw new ImageError(404, "The requested resource isn't a valid image.");
+        }
+    }
+
+    let url: URL;
+    try {
+        url = new URL(source);
+    } catch {
+        throw new ImageError(400, '"url" parameter is invalid');
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || !isAllowedRemote(url)) {
+        throw new ImageError(400, '"url" parameter is not allowed');
+    }
+    let response: Response;
+    try {
+        response = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS), redirect: 'manual' });
+    } catch {
+        throw new ImageError(504, '"url" parameter is valid but upstream response timed out');
+    }
+    if (!response.ok) {
+        throw new ImageError(response.status >= 400 ? response.status : 508, '"url" parameter is valid but upstream response is invalid');
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > MAX_SOURCE_BYTES) throw new ImageError(413, '"url" parameter is valid but upstream response is too large');
+    return { buffer, maxAge: upstreamMaxAge(response.headers.get('Cache-Control')) };
+}
+
+function isSvg(buffer: Buffer): boolean {
+    const head = buffer.subarray(0, 1024).toString('utf8').trimStart();
+    return head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg')) || /^<!--[\s\S]*?-->\s*<svg/.test(head);
+}
+
+/**
+ * Picks, from the Accept header, the configured format the browser prefers most.
+ * Priority: q value → specificity (image/avif > image/* > anything) → order in Accept → order in the config.
+ */
+function negotiate(accept: string): string | null {
+    const ranges = accept
+        .split(',')
+        .map((part, order) => {
+            const [range, ...params] = part.trim().split(';');
+            const q = params.map((param) => /^\s*q=([\d.]+)\s*$/.exec(param)?.[1]).find(Boolean);
+            return { range: range.trim().toLowerCase(), q: q === undefined ? 1 : Number(q), order };
+        })
+        .filter((entry) => entry.range !== '');
+
+    let best: { format: string; q: number; specificity: number; order: number } | null = null;
+    for (const format of IMAGE_CONFIG.formats) {
+        for (const { range, q, order } of ranges) {
+            const specificity = range === format ? 2 : range === `${format.split('/')[0]}/*` ? 1 : range === '*/*' ? 0 : -1;
+            if (specificity < 0 || !(q > 0)) continue;
+            if (
+                !best ||
+                q > best.q ||
+                (q === best.q && specificity > best.specificity) ||
+                (q === best.q && specificity === best.specificity && order < best.order)
+            ) {
+                best = { format, q, specificity, order };
+            }
+        }
+    }
+    return best ? best.format : null;
+}
+
+async function transform(source: string, width: number, quality: number, accept: string): Promise<CachedImage> {
+    const { buffer, maxAge: upstream } = await readSource(source);
+    const maxAge = Math.max(upstream, IMAGE_CONFIG.minimumCacheTTL);
+    const done = (body: Buffer, contentType: string): CachedImage => ({
+        body,
+        contentType,
+        etag: `"${createHash('sha256').update(body).digest('base64url')}"`,
+        maxAge,
+    });
+
+    // SVG is a vector image, so return it as is (the CSP on the response blocks scripts)
+    if (isSvg(buffer)) return done(buffer, 'image/svg+xml');
+
+    let metadata: Metadata;
+    try {
+        metadata = await sharp(buffer, { animated: true }).metadata();
+    } catch {
+        throw new ImageError(400, "The requested resource isn't a valid image.");
+    }
+    const sourceType = metadata.format === 'heif' ? 'image/avif' : `image/${metadata.format}`;
+    // Converting an animated image would lose its frames, so return it as is
+    if ((metadata.pages ?? 1) > 1) return done(buffer, sourceType);
+
+    const targetType = negotiate(accept) ?? (sourceType === 'image/png' ? 'image/png' : 'image/jpeg');
+    const pipeline = sharp(buffer, { sequentialRead: true }).rotate().resize({ width, withoutEnlargement: true });
+    if (targetType === 'image/avif') pipeline.avif({ quality: Math.max(quality - 20, 1), effort: 3 });
+    else if (targetType === 'image/webp') pipeline.webp({ quality });
+    else if (targetType === 'image/png') pipeline.png({ quality });
+    else pipeline.jpeg({ quality, mozjpeg: true });
+    return done(await pipeline.toBuffer(), targetType);
+}
+
+async function readCache(key: string): Promise<CachedImage | null> {
+    try {
+        const meta = JSON.parse(await fs.readFile(path.join(CACHE_DIR, `${key}.json`), 'utf8'));
+        if (meta.expireAt < Date.now()) return null;
+        return { body: await fs.readFile(path.join(CACHE_DIR, `${key}.bin`)), contentType: meta.contentType, etag: meta.etag, maxAge: meta.maxAge };
+    } catch {
+        return null;
+    }
+}
+
+async function writeCache(key: string, image: CachedImage) {
+    try {
+        await fs.mkdir(CACHE_DIR, { recursive: true });
+        await fs.writeFile(path.join(CACHE_DIR, `${key}.bin`), image.body);
+        const meta = { contentType: image.contentType, etag: image.etag, maxAge: image.maxAge, expireAt: Date.now() + image.maxAge * 1000 };
+        await fs.writeFile(path.join(CACHE_DIR, `${key}.json`), JSON.stringify(meta));
+    } catch (error) {
+        // The image can still be returned even if writing the cache fails
+        console.error('Failed to write image cache:', error);
+    }
+}
+
+// Concurrent requests for the same image share a single conversion
+const inFlight = new Map<string, Promise<CachedImage>>();
+
+export async function optimizeImage(request: Request): Promise<Response> {
+    try {
+        const { source, width, quality } = parseParams(new URL(request.url));
+        const accept = request.headers.get('Accept') ?? '';
+        const key = createHash('sha256')
+            .update([source, width, quality, negotiate(accept) ?? ''].join('\n'))
+            .digest('base64url');
+
+        let image = await readCache(key);
+        if (!image) {
+            let pending = inFlight.get(key);
+            if (!pending) {
+                pending = transform(source, width, quality, accept).finally(() => inFlight.delete(key));
+                inFlight.set(key, pending);
+                pending.then((result) => writeCache(key, result)).catch(() => {});
+            }
+            image = await pending;
+        }
+
+        const name = path.basename(source.split(/[?#]/, 1)[0]).replace(/\.[^.]*$/, '') || 'image';
+        const headers = new Headers({
+            'Content-Type': image.contentType,
+            'Cache-Control': `public, max-age=${image.maxAge}, must-revalidate`,
+            'Content-Disposition': `${IMAGE_CONFIG.contentDispositionType}; filename="${encodeURIComponent(name)}.${EXTENSIONS[image.contentType] ?? 'bin'}"`,
+            'Content-Security-Policy': IMAGE_CONFIG.contentSecurityPolicy,
+            'X-Content-Type-Options': 'nosniff',
+            Vary: 'Accept',
+            ETag: image.etag,
+        });
+        if (request.headers.get('If-None-Match') === image.etag) return new Response(null, { status: 304, headers });
+        return new Response(request.method === 'HEAD' ? null : new Uint8Array(image.body), { headers });
+    } catch (error) {
+        if (error instanceof ImageError) {
+            return new Response(error.message, { status: error.status, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+        }
+        throw error;
+    }
+}

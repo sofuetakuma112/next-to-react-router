@@ -1,0 +1,31 @@
+import { reactRouter } from '@react-router/dev/vite';
+import { defineConfig } from 'vite';
+import { routeCssOrder } from './vite-plugin-route-css-order.ts';
+
+export default defineConfig({
+    plugins: [reactRouter(), routeCssOrder()],
+    resolve: {
+        // Same as `paths` in tsconfig.json (also used by `@use` / `@import` in stylesheets).
+        alias: [/*__ALIASES__*/],
+    },
+    build: {
+        // Where built JS / CSS goes. The default, assets/, would be mixed up with files from public/assets/.
+        assetsDir: '_assets',
+        // Minify CSS with esbuild. Lightning CSS (the default) adds and removes vendor prefixes for its browser
+        // targets: where a stylesheet has both `backdrop-filter` and `-webkit-backdrop-filter`, it drops the
+        // former and the effect disappears in Chrome. Prefixing is left to PostCSS (autoprefixer).
+        cssMinify: 'esbuild',
+    },
+    server: {
+        port: Number(process.env.PORT) || 3000,
+    },
+    optimizeDeps: {
+        // Dependencies used in the browser, pre-bundled when the dev server starts. Anything missing here is
+        // pre-bundled the first time a page needs it, which reloads the page.
+        include: [/*__OPTIMIZE_DEPS__*/],
+    },
+    ssr: {
+        // Packages Node.js cannot load as ES modules as published; bundle them into the server build instead.
+        noExternal: [],
+    },
+});
