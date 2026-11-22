@@ -1,7 +1,8 @@
 // Small URL helpers.
-// Provides React Router equivalents of Next.js's router.query / router.pathname / { pathname, query }.
-import { useMemo } from 'react';
-import { useMatches, useParams, useSearchParams } from 'react-router';
+// Provides React Router equivalents of Next.js's router.query / router.pathname / { pathname, query },
+// and resolves relative hrefs the way next/link and router.push did.
+import { useCallback, useMemo } from 'react';
+import { useMatches, useParams, useSearchParams, type To } from 'react-router';
 
 export type QueryValue = string | number | boolean | null | undefined;
 export type QueryInput = Record<string, QueryValue | readonly QueryValue[]>;
@@ -53,4 +54,29 @@ export function useQuery(): Query {
 export function useRoutePattern(): string {
     const matches = useMatches();
     return matches[matches.length - 1]?.id ?? '';
+}
+
+/** `about`, `./about` and `../about`: not an absolute path, a URL with a scheme, or a query or hash on its own. */
+function isRelativePath(path: string): boolean {
+    return path !== '' && !/^(?:\/|[a-z][a-z0-9+.-]*:|[?#])/i.test(path);
+}
+
+/**
+ * Resolves a relative path in `to` the way Next.js did: against the pattern of the current page, as a browser resolves
+ * a relative URL. `about` is /about on /team and /posts/about on /posts/:id. React Router's Link and navigate() resolve
+ * it against the route they are rendered in instead (/team/about). Anything else is returned as is.
+ */
+export function resolveHref(to: To, pattern: string): To {
+    const pathname = typeof to === 'string' ? to : to.pathname;
+    if (pathname === undefined || !isRelativePath(pathname)) return to;
+    // `?` (optional segments) and `#` in the pattern are path characters here, not the start of a query or hash
+    const base = new URL(pattern.replace(/\?/g, '%3F').replace(/#/g, '%23') || '/', 'http://n');
+    const url = new URL(pathname, base);
+    return typeof to === 'string' ? url.pathname + url.search + url.hash : { ...to, pathname: url.pathname };
+}
+
+/** resolveHref for the current page: `navigate(resolveHref('about'))`. */
+export function useResolveHref(): (to: To) => To {
+    const pattern = useRoutePattern();
+    return useCallback((to: To) => resolveHref(to, pattern), [pattern]);
 }

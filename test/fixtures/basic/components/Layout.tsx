@@ -6,7 +6,9 @@ export default function Layout({ children }: { children: ReactNode }) {
     return (
         <div className={styles.shell}>
             <nav>
-                <Link href="/">Home</Link> <Link href={{ pathname: '/about', query: { from: 'nav' } }}>About</Link>
+                <Link href="/">Home</Link> <Link href={{ pathname: '/about', query: { from: 'nav' } }}>About</Link>{' '}
+                {/* Relative: Next.js resolves it against the current page (/about on /, /posts/about on /posts/1) */}
+                <Link href="about">Relative about</Link>
             </nav>
             {children}
         </div>

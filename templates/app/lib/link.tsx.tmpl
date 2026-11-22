@@ -1,0 +1,12 @@
+// React Router's Link, resolving a relative `to` (`about`, `./about`, `../about`) the way next/link did.
+// next/link resolved it against the current page, as a browser resolves a relative URL: `about` on /team is /about.
+// React Router resolves it against the route the Link is rendered in, which would lead to /team/about.
+// The codemod uses this Link in files whose hrefs may be relative; absolute paths and URLs are passed through unchanged.
+import type { ComponentProps } from 'react';
+import { Link as RouterLink } from 'react-router';
+import { useResolveHref } from './navigation';
+
+export function Link({ to, ...props }: ComponentProps<typeof RouterLink>) {
+    const resolveHref = useResolveHref();
+    return <RouterLink {...props} to={resolveHref(to)} />;
+}

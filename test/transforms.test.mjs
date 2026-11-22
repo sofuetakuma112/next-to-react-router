@@ -62,6 +62,43 @@ test('link: href becomes to, URL objects become { pathname, search }', () => {
     assert.match(output, /\{ pathname: '\/d', search: searchOf\(query\) \}/);
 });
 
+test('link: hrefs that may be relative use the generated Link, which resolves them as next/link did', () => {
+    const convert = (code) => {
+        const context = fakeContext();
+        const output = squash(apply(`import Link from 'next/link';\n${code}`, (file) => transformLink(file, context)));
+        return { output, usedLink: context.report.usedModules.has('link') };
+    };
+    // Known to be absolute: React Router's Link
+    for (const code of [
+        `export const a = <Link href="/a">A</Link>;`,
+        `export const a = <Link href="https://example.com">A</Link>;`,
+        `export const a = <Link href="#top">A</Link>;`,
+        `export const a = (id: number) => <Link href={\`/posts/\${id}\`}>A</Link>;`,
+        `const routes = { home: '/' };\nexport const a = <Link href={routes.home}>A</Link>;`,
+        `const post = (id: number) => \`/posts/\${id}\`;\nexport const a = <Link href={post(1)}>A</Link>;`,
+        `import { useMemo } from 'react';\nexport function A({ id }: { id?: number }) {\n    const href = useMemo(() => {\n        const base = '/contact';\n        if (!id) return base;\n        return base + \`?id=\${id}\`;\n    }, [id]);\n    return <Link href={href}>A</Link>;\n}`,
+        `export const a = (q: string) => <Link href={{ pathname: '/search', query: { q } }}>A</Link>;`,
+        `export const a = (ok: boolean) => <Link href={ok ? '/a' : '/b'}>A</Link>;`,
+    ]) {
+        const { output, usedLink } = convert(code);
+        assert.match(output, /import \{ Link \} from 'react-router';/, code);
+        assert.equal(usedLink, false, code);
+    }
+    // May be relative: the generated Link
+    for (const code of [
+        `export const a = <Link href="about">A</Link>;`,
+        `export const a = <Link href="../about">A</Link>;`,
+        `const Tabs = { A: 'tab-a' } as const;\nexport const a = <Link href={Tabs.A}>A</Link>;`,
+        `export const a = (href: string) => <Link href={href}>A</Link>;`,
+        `export const a = (props: { href: string }) => <Link {...props}>A</Link>;`,
+        `export const a = (ok: boolean) => <Link href={ok ? '/a' : 'b'}>A</Link>;`,
+    ]) {
+        const { output, usedLink } = convert(code);
+        assert.match(output, /import \{ Link \} from '@\/app\/lib\/link';/, code);
+        assert.equal(usedLink, true, code);
+    }
+});
+
 test('link: unsupported props stop the conversion', () => {
     assert.throws(
         () =>
@@ -159,8 +196,42 @@ export default withRouter(Redirect);`,
     );
     const text = squash(output);
     assert.match(text, /interface Props \{ to: string; \}/);
-    assert.match(text, /function Redirect\(\{ to \}: Props\) \{ const navigate = useNavigate\(\); navigate\(to, \{ replace: true \}\);/);
+    // `to` comes from props and may be a relative path, which Next.js resolved against the current page
+    assert.match(
+        text,
+        /function Redirect\(\{ to \}: Props\) \{ const navigate = useNavigate\(\); const resolveHref = useResolveHref\(\); navigate\(resolveHref\(to\), \{ replace: true \}\);/
+    );
     assert.match(text, /export default Redirect;/);
+});
+
+test('router: push / replace arguments that may be relative go through resolveHref', () => {
+    const output = squash(
+        apply(
+            `import { useRouter } from 'next/router';
+export function A({ next }: { next: string }) {
+    const router = useRouter();
+    return <>
+        <button onClick={() => router.push('/a')} />
+        <button onClick={() => router.push(\`/posts/\${1}\`)} />
+        <button onClick={() => router.push('edit')} />
+        <button onClick={() => router.replace(next)} />
+    </>;
+}
+export function B() {
+    const { push } = useRouter();
+    return <button onClick={() => push('../list')} />;
+}`,
+            (file) => transformRouter(file, fakeContext())
+        )
+    );
+    assert.match(output, /import \{ useResolveHref \} from '@\/app\/lib\/navigation';/);
+    assert.match(output, /const navigate = useNavigate\(\); const resolveHref = useResolveHref\(\);/);
+    assert.match(output, /navigate\('\/a'\)/);
+    assert.match(output, /navigate\(`\/posts\/\$\{1\}`\)/);
+    assert.match(output, /navigate\(resolveHref\('edit'\)\)/);
+    assert.match(output, /navigate\(resolveHref\(next\), \{ replace: true \}\)/);
+    assert.match(output, /export function B\(\) \{ const navigate = useNavigate\(\); const resolveHref = useResolveHref\(\);/);
+    assert.match(output, /navigate\(resolveHref\('\.\.\/list'\)\)/);
 });
 
 test('router: unsupported members stop the conversion', () => {

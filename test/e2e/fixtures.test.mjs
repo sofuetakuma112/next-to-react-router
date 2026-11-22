@@ -37,6 +37,7 @@ test('basic fixture', async () => {
     assert.match(html, /<body class="fixture-body">/);
     assert.match(html, /<title>Fixture home<\/title>/);
     assert.match(html, /<h1>Fixture<\/h1>/);
+    assert.match(html, /<a [^>]*href="\/about"[^>]*>Relative about<\/a>/, 'a relative href resolves against the page');
     assert.match(html, /class="font-inter-variable" data-title="Fixture home"/);
     assert.match(html, /srcSet="\/_image\?url=%2Fhero\.png&amp;w=384&amp;q=75 1x/);
     // next/script: beforeInteractive is in the HTML, afterInteractive is added in the browser after hydration
@@ -45,7 +46,12 @@ test('basic fixture', async () => {
     const post = await get('/posts/1');
     assert.equal(post.status, 200);
     assert.equal(post.headers.get('cache-control'), 'public, max-age=60');
-    assert.match(await post.text(), /<h1>First post<\/h1>/);
+    const postHtml = await post.text();
+    assert.match(postHtml, /<h1>First post<\/h1>/);
+    // As in Next.js: relative to /posts/[id], even when the link is in the layout
+    assert.match(postHtml, /<a [^>]*href="\/posts\/about"[^>]*>Relative about<\/a>/);
+    assert.match(postHtml, /<a [^>]*href="\/about"[^>]*>Up to about<\/a>/);
+    assert.match(postHtml, /<a [^>]*href="\/posts\/2"[^>]*>Sibling post<\/a>/);
 
     assert.equal((await get('/posts/0')).headers.get('location'), '/posts/1');
     assert.equal((await get('/posts/0')).status, 307);
