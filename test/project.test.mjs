@@ -61,13 +61,16 @@ test('routes: layouts group pages, the 404 page also handles unknown URLs', () =
         { file: 'blog/[id].tsx', path: 'blog/:id', pattern: '/blog/:id', index: false },
     ];
     const output = renderRoutesFile(routes, { layouts: [{ file: 'main-layout.tsx', exclude: ['/blog'] }], notFoundPage: routes[1] });
-    assert.match(output, /import \{ type RouteConfig, index, layout, route \} from '@react-router\/dev\/routes';/);
+    assert.match(output, /import \{ type RouteConfig, type RouteConfigEntry, index, layout, route \} from '@react-router\/dev\/routes';/);
+    // Next.js matches URLs case-sensitively; React Router does not unless told so
+    assert.match(squash(output), /caseSensitive: true, \.\.\.\(entry\.children && \{ children: caseSensitive\(entry\.children\) \}\)/);
+    assert.match(squash(output), /export default caseSensitive\(\[ .* \]\) satisfies RouteConfig;/);
     assert.match(
         squash(output),
         /layout\('main-layout\.tsx', \{ id: 'main-layout' \}, \[ index\('routes\/index\.tsx', \{ id: '\/' \}\), route\('404', 'routes\/404\.tsx', \{ id: '\/404' \}\), \/\/ [^\n]*? route\('\*', 'routes\/404\.tsx', \{ id: '\/\*' \}\), \]\), route\('blog', 'routes\/blog\/index\.tsx', \{ id: '\/blog' \}\), route\('blog\/:id'/
     );
     const flat = renderRoutesFile(routes.slice(0, 1), {});
-    assert.match(flat, /import \{ type RouteConfig, index \} from/);
+    assert.match(flat, /import \{ type RouteConfig, type RouteConfigEntry, index \} from/);
 });
 
 test('context: src/ layout, path aliases, package manager', () => {
@@ -164,6 +167,9 @@ export default function Document() {
         /<html lang="ja"> <head> <meta charSet="utf-8" \/> <meta name="viewport" content="width=device-width" \/> <Meta \/> <Links \/> <link rel="icon" href="\/favicon\.ico" \/> <\/head>/
     );
     assert.match(text, /<body className="app"> \{children\} <ScrollRestoration \/> <Scripts \/> <\/body>/);
+    // The generated ScrollRestoration, which waits for pages that load their content in the browser
+    assert.match(text, /import \{ ScrollRestoration \} from '@\/app\/lib\/scrollRestoration';/);
+    assert.doesNotMatch(text, /import \{[^}]*ScrollRestoration[^}]*\} from 'react-router'/);
     assert.match(
         text,
         /function MyApp\(\) \{ const matches = useMatches\(\); const leaf = matches\[matches\.length - 1\]; const handle = leaf\?\.handle as RouteHandle \| undefined; const pageProps = \(leaf\?\.loaderData \?\? \{\}\) as Record<string, any>;/

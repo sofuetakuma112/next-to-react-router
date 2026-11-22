@@ -152,7 +152,9 @@ function negotiate(accept: string): string | null {
             }
         }
     }
-    return best ? best.format : null;
+    // Like Next.js, convert only to a format the Accept header names. With just */* or image/*, keep the original format:
+    // clients without WebP support (link preview crawlers, mail clients) send Accept: */* for og:image URLs.
+    return best && accept.toLowerCase().includes(best.format) ? best.format : null;
 }
 
 async function transform(source: string, width: number, quality: number, accept: string): Promise<CachedImage> {

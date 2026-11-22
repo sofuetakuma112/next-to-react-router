@@ -63,6 +63,7 @@ test('basic fixture', async () => {
     assert.match(await unknown.text(), /Nothing here/);
 
     assert.equal((await get('/about/')).status, 308, 'trailing slashes redirect');
+    assert.equal((await get('/About')).status, 404, 'URLs are matched case-sensitively, as in Next.js');
     assert.equal((await get('/old-about')).status, 307, 'middleware redirect');
     assert.equal((await get('/old-about')).headers.get('location'), '/about', 'same-host redirects are relative, as in Next.js');
     const about = await (await get('/about')).text();
@@ -76,6 +77,8 @@ test('basic fixture', async () => {
     const image = await get('/_image?url=%2Fhero.png&w=640&q=75', { headers: { Accept: 'image/webp' } });
     assert.equal(image.status, 200);
     assert.equal(image.headers.get('content-type'), 'image/webp');
+    const original = await get('/_image?url=%2Fhero.png&w=640&q=75', { headers: { Accept: '*/*' } });
+    assert.equal(original.headers.get('content-type'), 'image/png', 'without image/webp in Accept, the original format is kept');
     assert.equal((await get('/_image?url=%2Fhero.png&w=641&q=75')).status, 400, 'only configured widths are served');
     assert.equal((await get('/_image?url=https%3A%2F%2Fevil.example%2Fa.png&w=640&q=75')).status, 400, 'only configured hosts are fetched');
 });

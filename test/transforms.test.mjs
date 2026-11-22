@@ -99,6 +99,49 @@ test('link: hrefs that may be relative use the generated Link, which resolves th
     }
 });
 
+test('link / router: { pathname, query } objects returned by a function or held in a constant become { pathname, search }', () => {
+    const output = squash(
+        apply(
+            `import Link from 'next/link';
+import { useRouter } from 'next/router';
+const contact = { pathname: '/contact', query: { from: 'nav' } };
+function chatRoute(id?: number) {
+    return id ? { pathname: '/chat', query: { active: id } } : '/chat';
+}
+export function A() {
+    const router = useRouter();
+    return <>
+        <Link href={chatRoute(1)}>Chat</Link>
+        <Link href={chatRoute(2)}>Again</Link>
+        <button onClick={() => router.push(contact)} />
+    </>;
+}`,
+            (file) => {
+                const context = fakeContext();
+                transformLink(file, context);
+                transformRouter(file, context);
+            }
+        )
+    );
+    assert.match(output, /return id \? \{ pathname: '\/chat', search: searchOf\(\{ active: id \}\) \} : '\/chat';/);
+    assert.match(output, /const contact = \{ pathname: '\/contact', search: searchOf\(\{ from: 'nav' \}\) \};/);
+    assert.match(output, /import \{ searchOf \} from '@\/app\/lib\/navigation';/);
+    assert.match(output, /navigate\(contact\)/);
+});
+
+test('link: a { pathname, query } object in another file is reported, not silently dropped', () => {
+    const project = createProject();
+    project.createSourceFile('/project/lib/routes.ts', `export const chat = { pathname: '/chat', query: { active: 1 } };\n`);
+    const file = project.createSourceFile(
+        '/project/components/example.tsx',
+        `import Link from 'next/link';\nimport { chat } from '../lib/routes';\nexport const a = <Link href={chat}>Chat</Link>;\n`
+    );
+    const context = fakeContext();
+    transformLink(file, context);
+    assert.equal(context.report.warnings.length, 1);
+    assert.match(context.report.warnings[0], /\/project\/lib\/routes\.ts:1: .*search: searchOf/);
+});
+
 test('link: unsupported props stop the conversion', () => {
     assert.throws(
         () =>

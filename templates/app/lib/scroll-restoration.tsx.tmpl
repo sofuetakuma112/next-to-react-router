@@ -1,0 +1,70 @@
+// Restores the scroll position on back / forward navigation and on reload.
+// React Router's ScrollRestoration restores it once, right after the navigation. On a page that loads its content in
+// the browser (from an API, after rendering), the page is still short at that moment, so the position is lost and the
+// page opens at the top. Next.js left this to the browser, which could often restore such pages from its back/forward
+// cache. This keeps restoring until the page is tall enough, for a short while, and stops as soon as the user scrolls.
+import { useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
+import { ScrollRestoration as RouterScrollRestoration, useLocation, useNavigationType } from 'react-router';
+
+// The last scroll position of each history entry (location.key)
+const positions = new Map<string, number>();
+// Where RouterScrollRestoration saves positions (its default)
+const STORAGE_KEY = 'react-router-scroll-positions';
+// How long to wait for the page to become tall enough
+const RETRY_MS = 3000;
+const USER_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown'] as const;
+
+/** The position to restore. After a back/forward or reload page load, the one RouterScrollRestoration saved in sessionStorage */
+function savedPosition(key: string, storageKey = STORAGE_KEY): number | undefined {
+    if (positions.has(key)) return positions.get(key);
+    const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (entry?.type !== 'back_forward' && entry?.type !== 'reload') return undefined;
+    try {
+        const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}');
+        const value = (saved as Record<string, unknown>)?.[key];
+        return typeof value === 'number' ? value : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+export function ScrollRestoration(props: ComponentProps<typeof RouterScrollRestoration>) {
+    const location = useLocation();
+    const navigationType = useNavigationType();
+    const keyRef = useRef(location.key);
+
+    // Scroll events arrive after rendering, so they belong to the entry being shown
+    useEffect(() => {
+        const save = () => positions.set(keyRef.current, window.scrollY);
+        window.addEventListener('scroll', save, { passive: true });
+        return () => window.removeEventListener('scroll', save);
+    }, []);
+
+    // Runs right after the child RouterScrollRestoration has restored the position
+    useLayoutEffect(() => {
+        keyRef.current = location.key;
+        const target = savedPosition(location.key, props.storageKey);
+        if (navigationType !== 'POP' || !target || Math.abs(window.scrollY - target) < 2) return;
+
+        let done = false;
+        const observer = new ResizeObserver(() => {
+            if (document.documentElement.scrollHeight - window.innerHeight >= target - 1) finish(true);
+        });
+        const timer = window.setTimeout(() => finish(true), RETRY_MS);
+        const cancel = () => finish(false);
+        function finish(restore: boolean) {
+            if (done) return;
+            done = true;
+            observer.disconnect();
+            window.clearTimeout(timer);
+            for (const type of USER_EVENTS) window.removeEventListener(type, cancel);
+            // Jump there, even when the page sets scroll-behavior: smooth
+            if (restore) window.scrollTo({ top: target, behavior: 'instant' });
+        }
+        observer.observe(document.body);
+        for (const type of USER_EVENTS) window.addEventListener(type, cancel, { passive: true });
+        return cancel;
+    }, [location.key, navigationType, props.storageKey]);
+
+    return <RouterScrollRestoration {...props} />;
+}
