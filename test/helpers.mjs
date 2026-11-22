@@ -54,5 +54,8 @@ export function squash(text) {
 export function copyFixture(name) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `next-to-react-router-${name}-`));
     fs.cpSync(path.join(packageDir, 'test', 'fixtures', name), dir, { recursive: true });
+    // Like a real checkout, the fixtures commit .env.example but not .env.
+    const example = path.join(dir, '.env.example');
+    if (fs.existsSync(example) && !fs.existsSync(path.join(dir, '.env'))) fs.copyFileSync(example, path.join(dir, '.env'));
     return dir;
 }
