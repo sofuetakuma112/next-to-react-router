@@ -95,8 +95,34 @@ export function Example() {
     assert.match(text, /navigate\('\/login', \{ replace: true \}\)/);
     assert.match(text, /href=\{createPath\(location\)\}/);
     assert.match(text, /navigate\(-1\)/);
-    assert.match(text, /String\(true && active\)/);
+    assert.match(text, /String\(active\)/);
     assert.doesNotMatch(output, /next\/router/);
+});
+
+test('router: isReady is always true, and the usual shapes are simplified', () => {
+    const output = apply(
+        `import { useEffect } from 'react';
+import { useRouter } from 'next/router';
+export function Example({ keyword }: { keyword?: string }) {
+    const router = useRouter();
+    useEffect(() => {
+        if (!router.isReady) return;
+        if (router.isReady && keyword !== undefined) load(keyword);
+        else if (router.isReady && keyword === undefined) reset();
+    }, [router.isReady, keyword]);
+    useEffect(() => {}, [keyword, router.isReady]);
+    return <p hidden={!router.isReady}>{String(router.isReady)}</p>;
+}`,
+        (file) => transformRouter(file, fakeContext())
+    );
+    const text = squash(output);
+    assert.doesNotMatch(text, /isReady|!true|true &&|\[true/);
+    assert.match(
+        text,
+        /useEffect\(\(\) => \{ if \(keyword !== undefined\) load\(keyword\); else if \(keyword === undefined\) reset\(\); \}, \[keyword\]\);/
+    );
+    assert.match(text, /useEffect\(\(\) => \{\}, \[keyword\]\);/);
+    assert.match(text, /<p hidden=\{false\}>\{String\(true\)\}<\/p>/);
 });
 
 test('router: `const query = router.query` keeps its name', () => {
